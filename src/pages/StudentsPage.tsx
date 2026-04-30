@@ -96,8 +96,6 @@ const StudentsPage: React.FC = () => {
   const [studentContract, setStudentContract] = useState<Contract | null>(null);
   const [contractLoading, setContractLoading] = useState(false);
 
-  const hasOtherFilters = !!(filterAge || filterChs || filterHasViolation ||
-    filterViolation || filterDormitory || filterRoom);
   const hasFioFilter = !!filterFio.trim();
 
   const loadStudents = useCallback(async (p: number) => {
@@ -140,19 +138,6 @@ const StudentsPage: React.FC = () => {
     }
   }, [pageSize]);
 
-  const loadByFio = useCallback(async (p: number, fio: string) => {
-    setLoading(true);
-    setError('');
-    try {
-      const res = await searchStudentsByFio(fio, p, pageSize);
-      setStudentsPage(res.data);
-    } catch {
-      setError('Ошибка поиска по ФИО');
-    } finally {
-      setLoading(false);
-    }
-  }, [pageSize]);
-
   const loadAll = useCallback(async () => {
     try {
       const [rRes, dRes, vRes] = await Promise.all([
@@ -169,9 +154,13 @@ const StudentsPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (isFioSearch) loadByFio(page, filterFio);
-    else if (isFiltering) loadFiltered(page, activeFilters);
-    else loadStudents(page);
+    if (isFioSearch) {
+      // при пагинации в режиме ФИО — просто листаем уже загруженные данные
+    } else if (isFiltering) {
+      loadFiltered(page, activeFilters);
+    } else {
+      loadStudents(page);
+    }
   }, [page]);
 
   useEffect(() => { loadAll(); }, []);
@@ -241,9 +230,9 @@ const StudentsPage: React.FC = () => {
   const goToPage = (p: number) => {
     setPage(p);
     setPageInput('');
-    if (isFioSearch) loadByFio(p, filterFio);
-    else if (isFiltering) loadFiltered(p, activeFilters);
-    else loadStudents(p);
+    if (isFiltering) loadFiltered(p, activeFilters);
+    else if (!isFioSearch) loadStudents(p);
+    // при isFioSearch пагинация работает через срез allFioStudents
   };
 
   const handlePageInputGo = () => {
@@ -283,14 +272,6 @@ const StudentsPage: React.FC = () => {
   };
 
   const handleFilter = async () => {
-    if (hasFioFilter) {
-      setIsFioSearch(true);
-      setIsFiltering(false);
-      setPage(0);
-      await loadByFio(0, filterFio.trim());
-      return;
-    }
-
     if (ageError || chsError) return;
 
     const filters = {
@@ -298,26 +279,117 @@ const StudentsPage: React.FC = () => {
       hasViolation: filterHasViolation, violation: filterViolation,
       dormitory: filterDormitory, room: filterRoom,
     };
-    const hasFilters = filters.age || filters.chs || filters.hasViolation ||
-      filters.violation || filters.dormitory || filters.room;
 
-    if (!hasFilters) {
-      setIsFiltering(false);
-      setIsFioSearch(false);
-      setActiveFilters({
-        age: '', chs: '', hasViolation: '',
-        violation: '', dormitory: '', room: '',
-      });
-      setPage(0);
-      loadStudents(0);
+    const hasOtherFilters = !!(filters.age || filters.chs || filters.hasViolation ||
+      filters.violation || filters.dormitory || filters.room);
+
+    // ФИО + другие фильтры — комбинированный поиск на фронтенде
+    if (hasFioFilter && hasOtherFilters) {
+      setLoading(true);
+      setError('');
+      try {
+        const fioRes = await searchStudentsByFio(filterFio.trim(), 0, 10000);
+        let result: Student[] = fioRes.data.content;
+
+        if (filters.age) {
+          result = result.filter(s => s.age === Number(filters.age));
+        }
+        if (filters.chs) {
+          result = result.filter(s => (s.chs ?? 0) === Number(filters.chs));
+        }
+        if (filters.hasViolation === 'YES') {
+          result = result.filter(s => s.violationIds && s.violationIds.length > 0);
+          if (filters.violation) {
+            result = result.filter(s =>
+              s.violationIds && violations.some(v =>
+                s.violationIds.includes(v.id) && v.violationType === filters.violation
+              )
+            );
+          }
+        }
+        if (filters.hasViolation === 'NO') {
+          result = result.filter(s => !s.violationIds || s.violationIds.length === 0);
+        }
+        if (filters.dormitory) {
+          result = result.filter(s => s.dormitoryId === Number(filters.dormitory));
+        }
+        if (filters.room) {
+          const targetRoom = rooms.find(r => r.id === Number(filters.room));
+          if (targetRoom) {
+            result = result.filter(s => s.roomNumber === targetRoom.number);
+          }
+        }
+
+        const totalElements = result.length;
+        const totalPagesCalc = Math.ceil(totalElements / pageSize) || 1;
+        setStudentsPage({
+          content: result.slice(0, pageSize),
+          page: {
+            totalElements,
+            totalPages: totalPagesCalc,
+            size: pageSize,
+            number: 0,
+          },
+        });
+        setPage(0);
+        setIsFioSearch(true);
+        setIsFiltering(true);
+      } catch {
+        setError('Ошибка поиска');
+      } finally {
+        setLoading(false);
+      }
       return;
     }
 
-    setIsFiltering(true);
+    // Только ФИО
+    if (hasFioFilter) {
+      setLoading(true);
+      setError('');
+      try {
+        const res = await searchStudentsByFio(filterFio.trim(), 0, 10000);
+        const result: Student[] = res.data.content;
+        const totalElements = result.length;
+        const totalPagesCalc = Math.ceil(totalElements / pageSize) || 1;
+        setStudentsPage({
+          content: result.slice(0, pageSize),
+          page: {
+            totalElements,
+            totalPages: totalPagesCalc,
+            size: pageSize,
+            number: 0,
+          },
+        });
+        setPage(0);
+        setIsFioSearch(true);
+        setIsFiltering(false);
+      } catch {
+        setError('Ошибка поиска по ФИО');
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    // Только другие фильтры
+    if (hasOtherFilters) {
+      setIsFiltering(true);
+      setIsFioSearch(false);
+      setActiveFilters(filters);
+      setPage(0);
+      await loadFiltered(0, filters);
+      return;
+    }
+
+    // Ничего не заполнено
+    setIsFiltering(false);
     setIsFioSearch(false);
-    setActiveFilters(filters);
+    setActiveFilters({
+      age: '', chs: '', hasViolation: '',
+      violation: '', dormitory: '', room: '',
+    });
     setPage(0);
-    await loadFiltered(0, filters);
+    loadStudents(0);
   };
 
   const handleClearFilter = () => {
@@ -340,9 +412,8 @@ const StudentsPage: React.FC = () => {
     try {
       await deleteStudent(id);
       setOpenMenuId(null);
-      if (isFioSearch) loadByFio(page, filterFio);
-      else if (isFiltering) loadFiltered(page, activeFilters);
-      else loadStudents(page);
+      if (isFiltering) loadFiltered(page, activeFilters);
+      else if (!isFioSearch) loadStudents(page);
       loadAll();
     } catch { setError('Ошибка удаления'); }
   };
@@ -352,9 +423,8 @@ const StudentsPage: React.FC = () => {
     try {
       await evictStudent(id);
       setOpenMenuId(null);
-      if (isFioSearch) loadByFio(page, filterFio);
-      else if (isFiltering) loadFiltered(page, activeFilters);
-      else loadStudents(page);
+      if (isFiltering) loadFiltered(page, activeFilters);
+      else if (!isFioSearch) loadStudents(page);
       loadAll();
     } catch { setError('Ошибка выселения'); }
   };
@@ -364,9 +434,8 @@ const StudentsPage: React.FC = () => {
     try {
       await addViolationToStudent(violationStudent.id, selectedViolationId);
       setShowViolationModal(false);
-      if (isFioSearch) loadByFio(page, filterFio);
-      else if (isFiltering) loadFiltered(page, activeFilters);
-      else loadStudents(page);
+      if (isFiltering) loadFiltered(page, activeFilters);
+      else if (!isFioSearch) loadStudents(page);
     } catch (e: any) {
       setError(e.response?.data?.message || 'Ошибка добавления нарушения');
     }
@@ -451,43 +520,32 @@ const StudentsPage: React.FC = () => {
 
         {/* ФИО */}
         <div style={{ marginBottom: '8px', minWidth: 0 }}>
-          <label style={{
-            ...labelStyle,
-            color: hasOtherFilters ? '#aaa' : '#333',
-          }}>ФИО:</label>
+          <label style={{ ...labelStyle, color: '#333' }}>ФИО:</label>
           <input
             type="text"
             value={filterFio}
             onChange={e => setFilterFio(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && !hasOtherFilters) handleFilter(); }}
-            disabled={hasOtherFilters}
-            style={{
-              ...inputStyle,
-              width: '150px',
-              background: hasOtherFilters ? '#eee' : '#fff',
-              color: hasOtherFilters ? '#aaa' : '#333',
-              cursor: hasOtherFilters ? 'not-allowed' : 'text',
-            }}
+            onKeyDown={e => { if (e.key === 'Enter') handleFilter(); }}
+            style={{ ...inputStyle, width: '150px' }}
           />
         </div>
 
         {/* Разделитель */}
-        <div style={{ marginBottom: '8px', width: '1px', height: '38px', background: '#ccc', flexShrink: 0 }} />
+        <div style={{
+          marginBottom: '8px', width: '1px',
+          height: '38px', background: '#ccc', flexShrink: 0,
+        }} />
 
         {/* Возраст */}
         <div style={{ marginBottom: '8px', minWidth: 0 }}>
-          <label style={{ ...labelStyle, color: hasFioFilter ? '#aaa' : '#333' }}>Возраст:</label>
+          <label style={{ ...labelStyle, color: '#333' }}>Возраст:</label>
           <input
             type="number" min={17} value={filterAge}
             onChange={e => handleAgeChange(e.target.value)}
-            disabled={hasFioFilter}
             style={{
               ...inputStyle,
               width: '70px',
               border: ageError ? '1px solid red' : '1px solid #ccc',
-              background: hasFioFilter ? '#eee' : '#fff',
-              color: hasFioFilter ? '#aaa' : '#333',
-              cursor: hasFioFilter ? 'not-allowed' : 'text',
             }}
           />
           {ageError && (
@@ -499,18 +557,14 @@ const StudentsPage: React.FC = () => {
 
         {/* Часы ОПТ */}
         <div style={{ marginBottom: '8px', minWidth: 0 }}>
-          <label style={{ ...labelStyle, color: hasFioFilter ? '#aaa' : '#333' }}>ОПТ:</label>
+          <label style={{ ...labelStyle, color: '#333' }}>ОПТ:</label>
           <input
             type="number" min={0} value={filterChs}
             onChange={e => handleChsChange(e.target.value)}
-            disabled={hasFioFilter}
             style={{
               ...inputStyle,
               width: '70px',
               border: chsError ? '1px solid red' : '1px solid #ccc',
-              background: hasFioFilter ? '#eee' : '#fff',
-              color: hasFioFilter ? '#aaa' : '#333',
-              cursor: hasFioFilter ? 'not-allowed' : 'text',
             }}
           />
           {chsError && (
@@ -522,17 +576,11 @@ const StudentsPage: React.FC = () => {
 
         {/* Общежитие */}
         <div style={{ marginBottom: '8px', minWidth: 0 }}>
-          <label style={{ ...labelStyle, color: hasFioFilter ? '#aaa' : '#333' }}>Общежитие:</label>
+          <label style={{ ...labelStyle, color: '#333' }}>Общежитие:</label>
           <select
             value={filterDormitory}
             onChange={e => handleDormitoryChange(e.target.value)}
-            disabled={hasFioFilter}
-            style={{
-              ...selectStyle,
-              background: hasFioFilter ? '#eee' : '#fff',
-              color: hasFioFilter ? '#aaa' : '#333',
-              cursor: hasFioFilter ? 'not-allowed' : 'pointer',
-            }}
+            style={{ ...selectStyle }}
           >
             <option value="">Все</option>
             {dormitories.map(d => (
@@ -545,17 +593,17 @@ const StudentsPage: React.FC = () => {
         <div style={{ marginBottom: '8px', minWidth: 0 }}>
           <label style={{
             ...labelStyle,
-            color: (hasFioFilter || !filterDormitory) ? '#aaa' : '#333',
+            color: !filterDormitory ? '#aaa' : '#333',
           }}>Комната:</label>
           <select
             value={filterRoom}
             onChange={e => handleRoomChange(e.target.value)}
-            disabled={hasFioFilter || !filterDormitory}
+            disabled={!filterDormitory}
             style={{
               ...selectStyle,
-              background: (hasFioFilter || !filterDormitory) ? '#eee' : '#fff',
-              color: (hasFioFilter || !filterDormitory) ? '#aaa' : '#333',
-              cursor: (hasFioFilter || !filterDormitory) ? 'not-allowed' : 'pointer',
+              background: !filterDormitory ? '#eee' : '#fff',
+              color: !filterDormitory ? '#aaa' : '#333',
+              cursor: !filterDormitory ? 'not-allowed' : 'pointer',
             }}
           >
             <option value="">Все</option>
@@ -567,18 +615,11 @@ const StudentsPage: React.FC = () => {
 
         {/* Нарушения */}
         <div style={{ marginBottom: '8px', minWidth: 0 }}>
-          <label style={{ ...labelStyle, color: hasFioFilter ? '#aaa' : '#333' }}>Нарушения:</label>
+          <label style={{ ...labelStyle, color: '#333' }}>Нарушения:</label>
           <select
             value={filterHasViolation}
             onChange={e => handleHasViolationChange(e.target.value as 'YES' | 'NO' | '')}
-            disabled={hasFioFilter}
-            style={{
-              ...selectStyle,
-              minWidth: '100px',
-              background: hasFioFilter ? '#eee' : '#fff',
-              color: hasFioFilter ? '#aaa' : '#333',
-              cursor: hasFioFilter ? 'not-allowed' : 'pointer',
-            }}
+            style={{ ...selectStyle, minWidth: '100px' }}
           >
             <option value="">Неважно</option>
             <option value="YES">Да</option>
@@ -586,22 +627,22 @@ const StudentsPage: React.FC = () => {
           </select>
         </div>
 
-                {/* Тип нарушения */}
+        {/* Тип нарушения */}
         <div style={{ marginBottom: '8px', minWidth: 0 }}>
           <label style={{
             ...labelStyle,
-            color: (hasFioFilter || filterHasViolation !== 'YES') ? '#aaa' : '#333',
+            color: filterHasViolation !== 'YES' ? '#aaa' : '#333',
           }}>Тип:</label>
           <select
             value={filterViolation}
             onChange={e => setFilterViolation(e.target.value as ViolationType | '')}
-            disabled={hasFioFilter || filterHasViolation !== 'YES'}
+            disabled={filterHasViolation !== 'YES'}
             style={{
               ...selectStyle,
               minWidth: '120px',
-              background: (hasFioFilter || filterHasViolation !== 'YES') ? '#eee' : '#fff',
-              color: (hasFioFilter || filterHasViolation !== 'YES') ? '#aaa' : '#333',
-              cursor: (hasFioFilter || filterHasViolation !== 'YES') ? 'not-allowed' : 'pointer',
+              background: filterHasViolation !== 'YES' ? '#eee' : '#fff',
+              color: filterHasViolation !== 'YES' ? '#aaa' : '#333',
+              cursor: filterHasViolation !== 'YES' ? 'not-allowed' : 'pointer',
             }}
           >
             <option value="">Любое</option>
@@ -611,7 +652,7 @@ const StudentsPage: React.FC = () => {
           </select>
         </div>
 
-        {/* Кнопки Поиск / Сбросить */}
+        {/* Кнопки */}
         <div style={{
           marginBottom: '8px',
           display: 'flex',
@@ -632,7 +673,7 @@ const StudentsPage: React.FC = () => {
               cursor: ageError || chsError ? 'not-allowed' : 'pointer',
               fontSize: '13px',
               opacity: ageError || chsError ? 0.5 : 1,
-              whiteSpace: 'nowrap',
+              whiteSpace: 'nowrap' as const,
             }}
           >
             Поиск
@@ -648,7 +689,7 @@ const StudentsPage: React.FC = () => {
               borderRadius: '6px',
               cursor: 'pointer',
               fontSize: '13px',
-              whiteSpace: 'nowrap',
+              whiteSpace: 'nowrap' as const,
             }}
           >
             Сбросить
@@ -660,9 +701,9 @@ const StudentsPage: React.FC = () => {
               padding: '4px 8px',
               borderRadius: '12px',
               fontSize: '11px',
-              whiteSpace: 'nowrap',
+              whiteSpace: 'nowrap' as const,
             }}>
-              {isFioSearch ? 'ФИО' : 'Фильтры'}
+              {isFioSearch && isFiltering ? 'ФИО + фильтры' : isFioSearch ? 'ФИО' : 'Фильтры'}
             </span>
           )}
         </div>
@@ -967,9 +1008,8 @@ const StudentsPage: React.FC = () => {
           onClose={() => setShowStudentModal(false)}
           onSave={() => {
             setShowStudentModal(false);
-            if (isFioSearch) loadByFio(page, filterFio);
-            else if (isFiltering) loadFiltered(page, activeFilters);
-            else loadStudents(page);
+            if (isFiltering) loadFiltered(page, activeFilters);
+            else if (!isFioSearch) loadStudents(page);
             loadAll();
           }}
         />
@@ -983,9 +1023,8 @@ const StudentsPage: React.FC = () => {
           onClose={() => setShowAssignModal(false)}
           onSave={() => {
             setShowAssignModal(false);
-            if (isFioSearch) loadByFio(page, filterFio);
-            else if (isFiltering) loadFiltered(page, activeFilters);
-            else loadStudents(page);
+            if (isFiltering) loadFiltered(page, activeFilters);
+            else if (!isFioSearch) loadStudents(page);
             loadAll();
           }}
         />
